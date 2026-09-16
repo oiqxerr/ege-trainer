@@ -87,12 +87,28 @@ function syncBadge() {
   return `<a class="sync-link" href="#/sync">${dot} Синхронизация</a>`;
 }
 
+// Тема — атрибут data-theme на <html>, значение хранится в localStorage
+// (ege.theme). Без сохранённого значения используем системную настройку
+// (@media prefers-color-scheme в CSS) — currentTheme() тогда просто читает,
+// что реально показано, а не решает сама.
+function currentTheme() {
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr) return attr;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function themeToggleHtml() {
+  const icon = currentTheme() === "dark" ? "☀️" : "🌙";
+  return `<button class="theme-toggle" id="theme-toggle-btn" type="button" title="Переключить тему">${icon}</button>`;
+}
+
 function layout(subject, contentHtml) {
   return `
     <header class="topbar">
       <a class="brand" href="#/">Тренажёр ЕГЭ</a>
       ${navHtml(subject)}
       ${syncBadge()}
+      ${themeToggleHtml()}
     </header>
     <main class="container">${contentHtml}</main>
     <p class="hint" style="text-align:center;margin-top:24px">
@@ -957,6 +973,24 @@ async function route() {
   }
   renderHome();
 }
+
+// Один делегированный обработчик на весь документ — кнопка темы живёт в
+// layout(), который перерисовывается на каждом экране, но клик обрабатываем
+// здесь один раз. Меняем ТОЛЬКО атрибут+иконку самой кнопки, а не зовём
+// route() заново: полный ре-рендер сбросил бы, например, ещё не отправленные
+// ответы в live-варианте экзамена или таймер обратного отсчёта.
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("#theme-toggle-btn");
+  if (!btn) return;
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try {
+    localStorage.setItem("ege.theme", next);
+  } catch {
+    /* приватный режим — тема просто не запомнится между сессиями */
+  }
+  btn.textContent = next === "dark" ? "☀️" : "🌙";
+});
 
 window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", () => {

@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Тренажёр ЕГЭ</title>
+<script>
+// Применяем сохранённую тему ДО отрисовки страницы — иначе был бы короткий
+// "мигок" светлой темой перед переключением на тёмную при каждой загрузке.
+(function () {
+  try {
+    var saved = localStorage.getItem("ege.theme");
+    if (saved) document.documentElement.setAttribute("data-theme", saved);
+  } catch (e) {}
+})();
+</script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📘</text></svg>">
 <link rel="stylesheet" href="css/style.css">
 <style>.btn-good{background:linear-gradient(180deg,var(--accent),var(--accent-dark))}</style>
