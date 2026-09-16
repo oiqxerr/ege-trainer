@@ -223,6 +223,20 @@ function questionMetaHtml(subject, q) {
   return `<div class="q-meta"><span class="q-id">№ ${esc(q.short_id)}</span></div>`;
 }
 
+// У заданий с развёрнутым ответом (14-20 у профильной математики, часть
+// сочинений) короткого "Ответ: X" часто нет вообще — там есть смысл только
+// в полном ходе решения с сайта-источника. Показываем его свёрнутым по
+// умолчанию (<details>, без JS) и ТОЛЬКО после того, как пользователь уже
+// сам попробовал ответить — та же логика, что и с correct_answer.
+function solutionBlockHtml(q) {
+  if (!q.solution_html) return "";
+  return `
+    <details class="solution-block">
+      <summary>Показать решение источника</summary>
+      <div class="solution-html">${q.solution_html}</div>
+    </details>`;
+}
+
 function answerInputHtml(q) {
   if (q.answer_kind === "essay") {
     return `<textarea class="essay-text" id="essay-input" rows="12" placeholder="Пишите здесь (текст не проверяется автоматически)"></textarea>`;
@@ -290,6 +304,7 @@ function showEssayCriteria(subject, q, params, posKey) {
       <div class="q-stem">${q.stem_html}</div>
       <div class="essay-preview">${esc(essayText)}</div>
       ${criteria}
+      ${solutionBlockHtml(q)}
       <div class="self-assess">
         <button class="btn btn-good" id="self-correct">В целом справился</button>
         <button class="btn btn-bad" id="self-incorrect">Не справился</button>
@@ -375,6 +390,7 @@ function showTrainResult(subject, q, result, params, posKey) {
       <div class="q-stem">${q.stem_html}</div>
       ${resultHtml}
       ${answerHtml}
+      ${solutionBlockHtml(q)}
       <button class="btn" id="next-question-btn">Следующее задание →</button>
     </div>
   `;
@@ -743,6 +759,7 @@ async function renderExamResults(subject) {
           <div class="q-stem">${q.stem_html}</div>
           <div class="essay-preview">${esc(a.given || "")}</div>
           ${criteria}
+          ${solutionBlockHtml(q)}
           <div class="self-assess">
             <button class="btn btn-good" data-self-qid="${q.id}" data-self-result="correct">В целом справился</button>
             <button class="btn btn-bad" data-self-qid="${q.id}" data-self-result="incorrect">Не справился</button>
