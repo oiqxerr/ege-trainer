@@ -307,6 +307,58 @@ function showEssayCriteria(subject, q, params, posKey) {
   });
 }
 
+// Используется, когда "Следующее задание" нажато во время прохождения
+// "Работы над ошибками" (params.reviewFrom стоит) — вместо повторного показа
+// ТОГО ЖЕ вопроса (обычное поведение pickQuestion по qid) ищем следующую
+// невыполненную ошибку: сперва в этой же теме, иначе в ближайшей по номеру
+// соседней теме (расстояние по порядку в structureFor), иначе в "unplaced".
+//
+// currentQid обязательно исключать явно: числовые ключи объекта attempts
+// перебираются JS-движком по возрастанию id, а НЕ по времени/порядку
+// вставки — без исключения "следующая" ошибка внутри той же темы всегда
+// оказывалась той с наименьшим id, то есть часто тем же самым вопросом,
+// на котором уже стоишь, если именно у него id меньше остальных.
+function findNextMistake(subject, fromPosition, currentQid) {
+  const attempts = Store.allAttempts(subject);
+  const byPosition = {};
+  for (const [qid, a] of Object.entries(attempts)) {
+    if (a.result !== "incorrect" || a.position == null) continue;
+    const key = String(a.position);
+    (byPosition[key] = byPosition[key] || []).push(qid);
+  }
+
+  const sameTopic = byPosition[String(fromPosition)] || [];
+  const sameTopicOther = sameTopic.filter((qid) => String(qid) !== String(currentQid));
+  if (sameTopicOther.length) {
+    return { position: String(fromPosition), qid: sameTopicOther[0] };
+  }
+  if (sameTopic.length) {
+    // единственная оставшаяся ошибка в теме — это и есть текущий вопрос,
+    // повторяем его же (лучше, чем молча перескакивать в другую тему,
+    // пока в этой ещё есть что решать)
+    return { position: String(fromPosition), qid: sameTopic[0] };
+  }
+
+  const order = structureFor(subject).map((p) => String(p.position));
+  const fromIdx = order.indexOf(String(fromPosition));
+  const otherTopics = Object.keys(byPosition).filter((k) => k !== "unplaced");
+  if (otherTopics.length) {
+    otherTopics.sort((a, b) => {
+      const da = fromIdx === -1 ? 0 : Math.abs(order.indexOf(a) - fromIdx);
+      const db = fromIdx === -1 ? 0 : Math.abs(order.indexOf(b) - fromIdx);
+      return da - db;
+    });
+    const nextPos = otherTopics[0];
+    return { position: nextPos, qid: byPosition[nextPos][0] };
+  }
+
+  if (byPosition["unplaced"] && byPosition["unplaced"].length) {
+    return { position: "unplaced", qid: byPosition["unplaced"][0] };
+  }
+
+  return null;
+}
+
 function showTrainResult(subject, q, result, params, posKey) {
   const resultHtml =
     result === "correct"
@@ -329,9 +381,23 @@ function showTrainResult(subject, q, result, params, posKey) {
   root.innerHTML = layout(subject, html);
 
   // Не ссылка на #/.../train — если хеш не меняется (типичный случай:
-  // остаёмся на том же ?position=N), браузер не шлёт hashchange, и клик
-  // по <a href> молча ничего не делает. Вызываем рендер напрямую.
-  document.getElementById("next-question-btn").addEventListener("click", () => {
+  // остаёмся на том же ?position=N, либо следующая ошибка совпадает с
+  // текущим qid — единственная оставшаяся в теме), браузер не шлёт
+  // hashchange, и клик по <a href> молча ничего не делает. Вызываем рендер
+  // напрямую всегда, а URL синхронизируем сами через replaceState.
+  document.getElementById("next-question-btn").addEventListener("click", async () => {
+    const reviewFrom = params.get("reviewFrom");
+    if (reviewFrom != null) {
+      const next = findNextMistake(subject, reviewFrom, q.id);
+      if (!next) {
+        location.hash = `#/mistakes/${subject}`;
+        return;
+      }
+      const newParams = new URLSearchParams({ qid: next.qid, reviewFrom: next.position });
+      history.replaceState(null, "", `#/${subject}/train?${newParams.toString()}`);
+      await renderTrain(subject, newParams);
+      return;
+    }
     renderTrain(subject, params);
   });
 }
@@ -389,13 +455,14 @@ function renderMistakesPositions(subject) {
     return;
   }
 
+  // Только номера, где реально есть ошибки — не весь список позиций
+  // предмета с прочерками (их и так видно на экране "Темы").
   const rows = structureFor(subject)
+    .filter((p) => countsByPos[String(p.position)])
     .map((p) => {
-      const count = countsByPos[String(p.position)] || 0;
-      const cell = count
-        ? `<a class="btn-small" href="#/mistakes/${subject}/${p.position}">Смотреть (${count})</a>`
-        : `<span class="hint">—</span>`;
-      return `<tr><td class="topic-code">${p.position}</td><td>${esc(p.title)}</td><td class="topic-progress">${cell}</td></tr>`;
+      const count = countsByPos[String(p.position)];
+      return `<tr><td class="topic-code">${p.position}</td><td>${esc(p.title)}</td>
+        <td class="topic-progress"><a class="btn-small" href="#/mistakes/${subject}/${p.position}">Смотреть (${count})</a></td></tr>`;
     })
     .join("");
 
@@ -443,7 +510,7 @@ async function renderMistakesReview(subject, position) {
       <div class="q-card">
         ${questionMetaHtml(subject, q)}
         <div class="q-stem">${q.stem_html}</div>
-        <a class="btn-small" href="#/${subject}/train?qid=${q.id}">Решить ещё раз</a>
+        <a class="btn-small" href="#/${subject}/train?qid=${q.id}&reviewFrom=${position}">Решить ещё раз</a>
       </div>`
     )
     .join("");
