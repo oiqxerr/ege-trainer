@@ -5,6 +5,7 @@
 
 const Store = (() => {
   const KEY = "ege_progress_v1";
+  const listeners = [];
 
   function load() {
     try {
@@ -20,6 +21,9 @@ const Store = (() => {
     } catch {
       /* приватный режим / диск переполнен — прогресс просто не сохранится в этой сессии */
     }
+    // sync.js подписывается сюда, чтобы отправлять любое локальное изменение
+    // в облако — не важно, каким методом Store оно было сделано.
+    listeners.forEach((cb) => cb(data));
   }
 
   function subjectData(data, subject) {
@@ -79,6 +83,10 @@ const Store = (() => {
 
     importAll(data) {
       save(data);
+    },
+
+    onChange(cb) {
+      listeners.push(cb);
     },
   };
 })();

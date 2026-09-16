@@ -1,0 +1,16 @@
+rules_version = '2';
+
+// Модель доступа — общий секрет (код), а не аккаунт: у кого есть код, тот
+// может читать/писать РОВНО этот один документ. Никакого чтения списком
+// (list) не разрешено нигде — угадать код перебором нельзя (20 символов
+// из 32-символьного алфавита), но перечислить всю коллекцию можно было бы
+// в одну строку, если бы list был разрешён, поэтому его нет вообще.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /syncSpaces/{code} {
+      allow get, create, update: if code.size() >= 16 && code.size() <= 40;
+      allow delete: if false;
+      allow list: if false;
+    }
+  }
+}

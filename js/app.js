@@ -80,16 +80,24 @@ function navHtml(subject) {
     </nav>`;
 }
 
+function syncBadge() {
+  const state = Sync.getState();
+  if (!state.configured) return "";
+  const dot = { idle: "⚪", connecting: "🟡", synced: "🟢", error: "🔴" }[state.status] || "⚪";
+  return `<a class="sync-link" href="#/sync">${dot} Синхронизация</a>`;
+}
+
 function layout(subject, contentHtml) {
   return `
     <header class="topbar">
       <a class="brand" href="#/">Тренажёр ЕГЭ</a>
       ${navHtml(subject)}
+      ${syncBadge()}
     </header>
     <main class="container">${contentHtml}</main>
     <p class="hint" style="text-align:center;margin-top:24px">
       Данные и разборы — с сайта <a href="https://ege.sdamgia.ru" target="_blank" rel="noopener">РешуЕГЭ</a> (sdamgia.ru).
-      Прогресс хранится только в этом браузере.
+      Прогресс хранится в этом браузере (и в облаке по коду — см. «Синхронизация», если подключена).
     </p>`;
 }
 
@@ -633,6 +641,101 @@ async function renderExamResults(subject) {
   });
 }
 
+// ---------- Синхронизация ----------
+
+const SYNC_STATUS_LABEL = {
+  idle: "⚪ Не подключено",
+  unavailable: "⚪ Синхронизация не настроена",
+  connecting: "🟡 Подключение…",
+  synced: "🟢 Синхронизировано",
+  error: "🔴 Ошибка соединения — проверьте интернет",
+};
+
+function renderSync() {
+  // Перерисовываемся сами, когда статус поменяется асинхронно (например,
+  // "Подключение…" -> "Синхронизировано" после первого ответа Firestore) —
+  // без этого пришлось бы вручную обновлять страницу, чтобы увидеть, что
+  // код подключился.
+  Sync.setStatusListener(renderSync);
+  const state = Sync.getState();
+
+  let body;
+  if (!state.configured) {
+    body = `<p class="hint">Синхронизация ещё не настроена на этом сайте.</p>`;
+  } else if (state.code) {
+    body = `
+      <label>Код этого пространства — введите такой же на другом устройстве
+        <div class="answer-form">
+          <input type="text" class="answer-text" id="sync-code-display" readonly value="${esc(Sync.groupCode(state.code))}">
+          <button class="btn-small" id="sync-copy-btn">Скопировать</button>
+        </div>
+      </label>
+      <p class="hint">${SYNC_STATUS_LABEL[state.status] || ""}</p>
+      <button class="btn btn-bad" id="sync-disconnect-btn">Отключить синхронизацию</button>
+    `;
+  } else {
+    body = `
+      <button class="btn" id="sync-create-btn">Создать код на этом устройстве</button>
+      <p class="hint" style="margin-top:18px">Или введите код с другого устройства:</p>
+      <div class="answer-form">
+        <input type="text" class="answer-text" id="sync-code-input" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off">
+        <button class="btn-small" id="sync-connect-btn">Подключиться</button>
+      </div>
+    `;
+  }
+
+  root.innerHTML = layout(null, `
+    <h1>Синхронизация прогресса</h1>
+    <p class="hint">
+      Прогресс по умолчанию хранится только в этом браузере. Код ниже — это общий
+      секрет, а не логин с паролем: у кого есть код, тот может читать и менять
+      данные по нему, поэтому не публикуйте его — используйте только для своих
+      устройств.
+    </p>
+    ${body}
+  `);
+
+  const createBtn = document.getElementById("sync-create-btn");
+  if (createBtn) {
+    createBtn.addEventListener("click", () => {
+      Sync.createNew();
+      renderSync();
+    });
+  }
+
+  const connectBtn = document.getElementById("sync-connect-btn");
+  if (connectBtn) {
+    connectBtn.addEventListener("click", () => {
+      const raw = document.getElementById("sync-code-input").value;
+      if (!raw.trim()) return;
+      if (confirm("Если в облаке по этому коду уже есть данные — они заменят прогресс на этом устройстве. Продолжить?")) {
+        Sync.connect(raw);
+        renderSync();
+      }
+    });
+  }
+
+  const copyBtn = document.getElementById("sync-copy-btn");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", () => {
+      navigator.clipboard?.writeText(state.code).then(
+        () => alert("Код скопирован"),
+        () => alert("Не получилось скопировать — выделите код вручную")
+      );
+    });
+  }
+
+  const disconnectBtn = document.getElementById("sync-disconnect-btn");
+  if (disconnectBtn) {
+    disconnectBtn.addEventListener("click", () => {
+      if (confirm("Отключить синхронизацию на этом устройстве? Данные в облаке останутся.")) {
+        Sync.disconnect();
+        renderSync();
+      }
+    });
+  }
+}
+
 // ---------- Роутинг ----------
 
 function parseHash() {
@@ -644,8 +747,15 @@ function parseHash() {
 }
 
 async function route() {
+  // Экран синхронизации сам себя перерисовывает при смене статуса (см.
+  // renderSync) — сбрасываем слушатель при уходе с любого экрана, иначе
+  // асинхронный ответ Firestore мог бы перерисовать поверх уже другой
+  // открытой страницы (тот же приём, что и с examTimerInterval).
+  Sync.setStatusListener(null);
+
   const { parts, params } = parseHash();
   if (!parts.length) return renderHome();
+  if (parts[0] === "sync") return renderSync();
 
   const subject = parts[0];
   if (!SUBJECT_NAMES[subject]) return renderHome();
@@ -670,4 +780,7 @@ async function route() {
 }
 
 window.addEventListener("hashchange", route);
-window.addEventListener("DOMContentLoaded", route);
+window.addEventListener("DOMContentLoaded", () => {
+  Sync.init();
+  route();
+});
