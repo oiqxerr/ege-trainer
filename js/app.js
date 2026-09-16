@@ -75,7 +75,7 @@ function navHtml(subject) {
       <a href="#/${subject}/topics">Темы</a>
       <a href="#/${subject}/train">Тренировка</a>
       <a href="#/${subject}/exam">Полный вариант</a>
-      <a href="#/${subject}/mistakes">Работа над ошибками</a>
+      <a href="#/mistakes/${subject}">Работа над ошибками</a>
       <a href="#/${subject}/stats">Статистика</a>
     </nav>`;
 }
@@ -112,7 +112,11 @@ function renderHome() {
       </a>`
     )
     .join("");
-  root.innerHTML = layout(null, `<h1>Тренажёр ЕГЭ</h1><div class="card-grid">${cards}</div>`);
+  root.innerHTML = layout(
+    null,
+    `<h1>Тренажёр ЕГЭ</h1><div class="card-grid">${cards}</div>
+     <p style="margin-top:20px"><a href="#/mistakes">Работа над ошибками (все предметы) →</a></p>`
+  );
 }
 
 // ---------- Темы ----------
@@ -333,49 +337,124 @@ function showTrainResult(subject, q, result, params, posKey) {
 }
 
 // ---------- Работа над ошибками ----------
+//
+// Три уровня вместо одного списка: сначала предмет (ошибки бывают в обоих
+// сразу), потом номер задания внутри предмета (чтобы не листать сотню
+// вперемешку), и только потом сами задания — БЕЗ готового ответа рядом:
+// его показывает уже существующий экран тренировки, но только после того,
+// как заново попробуешь ответить (см. renderTrain/showTrainResult).
 
-async function renderMistakes(subject) {
+function renderMistakesSubjects() {
+  const rows = Object.keys(SUBJECT_NAMES)
+    .map((key) => {
+      const attempts = Store.allAttempts(key);
+      const count = Object.values(attempts).filter((a) => a.result === "incorrect").length;
+      const cell = count
+        ? `<a class="btn-small" href="#/mistakes/${key}">Смотреть (${count})</a>`
+        : `<span class="hint">ошибок нет</span>`;
+      return `<tr><td>${esc(SUBJECT_NAMES[key])}</td><td class="topic-progress">${cell}</td></tr>`;
+    })
+    .join("");
+
+  root.innerHTML = layout(
+    null,
+    `<h1>Работа над ошибками</h1>
+     <p class="hint">Выберите предмет.</p>
+     <table class="topics-table"><tbody>${rows}</tbody></table>`
+  );
+}
+
+function renderMistakesPositions(subject) {
   const attempts = Store.allAttempts(subject);
-  const mistakeEntries = Object.entries(attempts).filter(([, a]) => a.result === "incorrect");
+  const countsByPos = {};
+  let unknownCount = 0;
+  for (const a of Object.values(attempts)) {
+    if (a.result !== "incorrect") continue;
+    if (a.position == null) {
+      unknownCount++;
+      continue;
+    }
+    const key = String(a.position);
+    countsByPos[key] = (countsByPos[key] || 0) + 1;
+  }
 
-  // Загружаем только файлы позиций, в которых реально есть ошибки — не все
-  // 27+ файлов подряд. Записи без сохранённой position (старый формат до
-  // разбиения на файлы) восстановить нельзя, они просто не попадут в список.
-  const posKeys = [...new Set(mistakeEntries.map(([, a]) => (a.position != null ? String(a.position) : null)).filter((p) => p != null))];
-  await Promise.all(posKeys.map((p) => loadPosition(subject, p)));
-  const byId = {};
-  posKeys.forEach((p) => {
-    const pool = POSITION_CACHE[`${subject}/${p}`] || [];
-    pool.forEach((q) => (byId[String(q.id)] = q));
-  });
-
-  const mistakes = mistakeEntries
-    .map(([qid, a]) => ({ q: byId[qid], a }))
-    .filter((m) => m.q)
-    .sort((x, y) => y.a.ts - x.a.ts);
-
-  if (!mistakes.length) {
+  const totalMistakes = Object.values(countsByPos).reduce((sum, c) => sum + c, 0);
+  if (!totalMistakes) {
     root.innerHTML = layout(
       subject,
-      `<h1>Работа над ошибками</h1>
-       <p class="empty">Ошибок пока нет — либо вы всё решаете верно, либо ещё не начинали тренировку.</p>`
+      `<h1>Работа над ошибками — ${esc(SUBJECT_NAMES[subject])}</h1>
+       <p class="empty">Ошибок пока нет — либо вы всё решаете верно, либо ещё не начинали тренировку.</p>
+       <a href="#/mistakes">← Другой предмет</a>`
     );
     return;
   }
 
-  const cards = mistakes
+  const rows = structureFor(subject)
+    .map((p) => {
+      const count = countsByPos[String(p.position)] || 0;
+      const cell = count
+        ? `<a class="btn-small" href="#/mistakes/${subject}/${p.position}">Смотреть (${count})</a>`
+        : `<span class="hint">—</span>`;
+      return `<tr><td class="topic-code">${p.position}</td><td>${esc(p.title)}</td><td class="topic-progress">${cell}</td></tr>`;
+    })
+    .join("");
+
+  // "unplaced" — реальный ключ позиции из index.json (задания без номера
+  // экзамена, встречаются в "тренировке вперемешку"), не отдельная категория.
+  const unplacedCount = countsByPos["unplaced"] || 0;
+  const unplacedRow = unplacedCount
+    ? `<tr><td class="topic-code">—</td><td>Без определённого номера</td>
+        <td class="topic-progress"><a class="btn-small" href="#/mistakes/${subject}/unplaced">Смотреть (${unplacedCount})</a></td></tr>`
+    : "";
+
+  root.innerHTML = layout(
+    subject,
+    `<h1>Работа над ошибками — ${esc(SUBJECT_NAMES[subject])}</h1>
+     <p class="hint">Выберите номер задания.</p>
+     <a href="#/mistakes">← Другой предмет</a>
+     <table class="topics-table">
+       <thead><tr><th>№</th><th>Задание</th><th></th></tr></thead>
+       <tbody>${rows}${unplacedRow}</tbody>
+     </table>
+     ${unknownCount ? `<p class="hint">Ещё ${unknownCount} ошибок сохранены без номера задания (старый формат) — их нельзя открыть повторно.</p>` : ""}`
+  );
+}
+
+async function renderMistakesReview(subject, position) {
+  const attempts = Store.allAttempts(subject);
+  const mistakeEntries = Object.entries(attempts).filter(
+    ([, a]) => a.result === "incorrect" && String(a.position) === String(position)
+  );
+
+  if (!mistakeEntries.length) {
+    location.hash = `#/mistakes/${subject}`;
+    return;
+  }
+
+  const pool = await loadPosition(subject, position);
+  const byId = Object.fromEntries(pool.map((q) => [String(q.id), q]));
+
+  const cards = mistakeEntries
+    .map(([qid, a]) => ({ q: byId[qid], a }))
+    .filter((m) => m.q)
+    .sort((x, y) => y.a.ts - x.a.ts)
     .map(
       ({ q }) => `
       <div class="q-card">
         ${questionMetaHtml(subject, q)}
         <div class="q-stem">${q.stem_html}</div>
-        ${q.correct_answer ? `<div class="correct-answer">Правильный ответ: <strong>${esc(q.correct_answer)}</strong></div>` : ""}
         <a class="btn-small" href="#/${subject}/train?qid=${q.id}">Решить ещё раз</a>
       </div>`
     )
     .join("");
 
-  root.innerHTML = layout(subject, `<h1>Работа над ошибками</h1>${cards}`);
+  root.innerHTML = layout(
+    subject,
+    `<h1>Работа над ошибками — задание ${position === "unplaced" ? "без номера" : "№" + position}</h1>
+     <p class="hint">Правильный ответ здесь не показывается — нажмите «Решить ещё раз», чтобы попробовать снова.</p>
+     <a href="#/mistakes/${subject}">← Все номера с ошибками</a>
+     ${cards}`
+  );
 }
 
 // ---------- Статистика ----------
@@ -757,6 +836,18 @@ async function route() {
   if (!parts.length) return renderHome();
   if (parts[0] === "sync") return renderSync();
 
+  // Работа над ошибками — отдельная, не привязанная к текущему предмету
+  // ветка маршрутов: сначала выбор предмета (#/mistakes), потом номер
+  // задания внутри предмета (#/mistakes/<subject>), потом сами задания
+  // этого номера (#/mistakes/<subject>/<position>).
+  if (parts[0] === "mistakes") {
+    const [, subj, pos] = parts;
+    if (!subj) return renderMistakesSubjects();
+    if (!SUBJECT_NAMES[subj]) return renderHome();
+    if (!pos) return renderMistakesPositions(subj);
+    return await renderMistakesReview(subj, pos);
+  }
+
   const subject = parts[0];
   if (!SUBJECT_NAMES[subject]) return renderHome();
 
@@ -766,7 +857,11 @@ async function route() {
   try {
     if (screen === "topics") return await renderTopics(subject);
     if (screen === "train") return await renderTrain(subject, params);
-    if (screen === "mistakes") return await renderMistakes(subject);
+    // старая ссылка вида #/<subject>/mistakes — редирект на новую схему
+    if (screen === "mistakes") {
+      location.hash = `#/mistakes/${subject}`;
+      return;
+    }
     if (screen === "stats") return await renderStats(subject);
     if (screen === "exam" && !sub) return await renderExamStart(subject);
     if (screen === "exam" && sub === "live") return await renderExamLive(subject);
