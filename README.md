@@ -1,6 +1,8 @@
 # Тренажёр ЕГЭ — статическая версия (РешуЕГЭ)
 
-Публичная версия: **https://ege-trainer-app.web.app**
+Публичная версия: **https://oiqxerr.github.io/ege-trainer/**
+(зеркало на Firebase Hosting: https://ege-trainer-app.web.app — та же сборка,
+поддерживается на случай проблем с GitHub Pages)
 
 Полностью статический сайт (HTML/CSS/JS, без сервера) — данные и разборы с
 [РешуЕГЭ](https://ege.sdamgia.ru) (sdamgia.ru), ответ уже известен из
@@ -54,8 +56,20 @@ for subject in ['reshuege_rus', 'reshuege_math_pro']:
 
 ## Как задеплоить
 
+Основной способ — просто запушить в `main`, GitHub Pages подхватывает
+автоматически (ветка `main`, корень репозитория — настроено в Settings →
+Pages):
+
 ```bash
-cd ege-static
+git add -A
+git commit -m "..."
+git push
+```
+
+Обновление доходит за 1-2 минуты. Зеркало на Firebase (не обязательно,
+но поддерживается) обновляется отдельной командой:
+
+```bash
 firebase deploy --only hosting
 ```
 
