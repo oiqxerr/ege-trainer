@@ -35,12 +35,20 @@ const Store = (() => {
       return subjectData(data, subject).attempts[qid] || null;
     },
 
-    setAttempt(subject, qid, result, given) {
+    setAttempt(subject, qid, result, given, position) {
       const data = load();
+      const existing = subjectData(data, subject).attempts[qid];
       subjectData(data, subject).attempts[qid] = {
         result,
         given,
         ts: Date.now(),
+        // position нужен, чтобы потом (в "Работе над ошибками") знать, какой
+        // из data/<subject>/pos-N.json файлов открыть за текстом задания —
+        // данные теперь разбиты по номеру, а не одним большим файлом.
+        // Сохраняем позицию, даже если её сейчас не передали (например,
+        // самооценка сочинения в результатах варианта не всегда знает
+        // позицию под рукой) — берём её из уже существующей записи.
+        position: position !== undefined ? position : existing && existing.position,
       };
       save(data);
     },

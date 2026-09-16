@@ -6,15 +6,46 @@ const SUBJECT_NAMES = {
   math_pro: "Математика. Профильный уровень",
 };
 
-const DATA_CACHE = {};
 const root = document.getElementById("root");
 
-async function loadSubject(subject) {
-  if (DATA_CACHE[subject]) return DATA_CACHE[subject];
-  const res = await fetch(`data/${subject}.json`);
+/* Данные разбиты по номеру задания (data/<subject>/pos-N.json, плюс
+   unplaced.json для заданий без определённой позиции) — один файл на весь
+   предмет когда-то доходил до 32 МБ (9000+ заданий по русскому), это долго
+   грузить целиком ради одного экрана. index.json — только счётчики
+   {"1": 325, ..., "unplaced": 341}, без текстов — им достаточно для
+   "Тем"/"Статистики", полные файлы грузятся только когда реально нужны
+   (тренировка по конкретной позиции, полный вариант). */
+
+const INDEX_CACHE = {};
+const POSITION_CACHE = {};
+
+async function loadIndex(subject) {
+  if (INDEX_CACHE[subject]) return INDEX_CACHE[subject];
+  const res = await fetch(`data/${subject}/index.json`);
+  const index = await res.json();
+  INDEX_CACHE[subject] = index;
+  return index;
+}
+
+async function loadPosition(subject, position) {
+  const key = `${subject}/${position}`;
+  if (POSITION_CACHE[key]) return POSITION_CACHE[key];
+  const file = position === "unplaced" ? "unplaced" : `pos-${position}`;
+  const res = await fetch(`data/${subject}/${file}.json`);
   const questions = await res.json();
-  DATA_CACHE[subject] = questions;
+  POSITION_CACHE[key] = questions;
   return questions;
+}
+
+// Для полного варианта нужен хотя бы один вопрос с КАЖДОЙ позиции —
+// файлы грузятся параллельно, разово, только по явному действию пользователя.
+async function loadAllPositions(subject) {
+  const index = await loadIndex(subject);
+  const keys = Object.keys(index).filter((k) => k !== "unplaced" && index[k] > 0);
+  const lists = await Promise.all(keys.map((k) => loadPosition(subject, k)));
+  const byPosition = {};
+  keys.forEach((k, i) => (byPosition[k] = lists[i]));
+  return byPosition;
 }
 
 function structureFor(subject) {
@@ -79,26 +110,29 @@ function renderHome() {
 // ---------- Темы ----------
 
 async function renderTopics(subject) {
-  const questions = await loadSubject(subject);
+  const index = await loadIndex(subject);
   const attempts = Store.allAttempts(subject);
 
-  const byPosition = {};
-  for (const q of questions) {
-    if (q.exam_position == null) continue;
-    byPosition[q.exam_position] = byPosition[q.exam_position] || [];
-    byPosition[q.exam_position].push(q);
+  // solved считаем по attempts (там теперь хранится position), а не по
+  // полным данным — иначе пришлось бы тянуть все 27 файлов только чтобы
+  // посчитать, сколько уже решено.
+  const solvedByPosition = {};
+  for (const a of Object.values(attempts)) {
+    if (a.result === "correct" && a.position != null) {
+      solvedByPosition[a.position] = (solvedByPosition[a.position] || 0) + 1;
+    }
   }
 
-  const unplacedTotal = questions.filter((q) => q.exam_position == null).length;
+  const unplacedTotal = index.unplaced || 0;
 
   const rows = structureFor(subject)
     .map((p) => {
-      const qs = byPosition[p.position] || [];
-      const solved = qs.filter((q) => attempts[q.id] && attempts[q.id].result === "correct").length;
-      const cell = qs.length
-        ? `${solved} / ${qs.length}`
+      const total = index[String(p.position)] || 0;
+      const solved = solvedByPosition[p.position] || 0;
+      const cell = total
+        ? `${solved} / ${total}`
         : `<span class="hint">нет в базе</span>`;
-      const link = qs.length
+      const link = total
         ? `<a class="btn-small" href="#/${subject}/train?position=${p.position}">Решать</a>`
         : "";
       return `<tr>
@@ -125,16 +159,46 @@ async function renderTopics(subject) {
 
 // ---------- Тренировка ----------
 
-function pickQuestion(subject, questions, position, qid) {
-  if (qid) {
-    return questions.find((q) => String(q.id) === String(qid)) || null;
+// Без выбранной позиции ("тренировка вперемешку") нужно решить, ИЗ КАКОГО
+// файла вообще брать вопрос, не загружая все разом. Берём позицию случайно,
+// с вероятностью пропорционально числу заданий в ней — иначе позиция из
+// 1000 заданий и позиция из 20 выпадали бы одинаково часто.
+function pickRandomPositionKey(index) {
+  const entries = Object.entries(index).filter(([, count]) => count > 0);
+  const total = entries.reduce((sum, [, count]) => sum + count, 0);
+  if (!total) return null;
+  let r = Math.random() * total;
+  for (const [key, count] of entries) {
+    r -= count;
+    if (r < 0) return key;
   }
+  return entries[entries.length - 1][0];
+}
+
+// Возвращает { question, posKey } — posKey нужен отдельно от
+// question.exam_position, потому что у "неразмеченных" заданий
+// exam_position === null, а файл, откуда их реально взяли, всё равно
+// нужно знать (чтобы потом суметь открыть то же задание повторно).
+async function pickQuestion(subject, position, qid) {
+  if (qid) {
+    // "Решить ещё раз" из "Работы над ошибками" — там мы уже когда-то
+    // сохранили, в каком файле лежит этот qid (см. Store.setAttempt).
+    const attempt = Store.getAttempt(subject, qid);
+    const posKey = attempt && attempt.position != null ? String(attempt.position) : null;
+    if (posKey == null) return { question: null, posKey: null }; // старая запись без position — не восстановить
+    const pool = await loadPosition(subject, posKey);
+    return { question: pool.find((q) => String(q.id) === String(qid)) || null, posKey };
+  }
+
+  const posKey = position ? String(position) : pickRandomPositionKey(await loadIndex(subject));
+  if (posKey == null) return { question: null, posKey: null };
+  const pool = await loadPosition(subject, posKey);
+  if (!pool.length) return { question: null, posKey };
+
   const attempts = Store.allAttempts(subject);
-  let pool = position ? questions.filter((q) => q.exam_position === Number(position)) : questions;
-  if (!pool.length) return null;
   const unsolved = pool.filter((q) => !(attempts[q.id] && attempts[q.id].result === "correct"));
   const finalPool = unsolved.length ? unsolved : pool;
-  return finalPool[Math.floor(Math.random() * finalPool.length)];
+  return { question: finalPool[Math.floor(Math.random() * finalPool.length)], posKey };
 }
 
 function questionMetaHtml(subject, q) {
@@ -155,10 +219,9 @@ function answerInputHtml(q) {
 }
 
 async function renderTrain(subject, params) {
-  const questions = await loadSubject(subject);
   const position = params.get("position");
   const qid = params.get("qid");
-  const q = pickQuestion(subject, questions, position, qid);
+  const { question: q, posKey } = await pickQuestion(subject, position, qid);
 
   if (!q) {
     root.innerHTML = layout(
@@ -186,17 +249,17 @@ async function renderTrain(subject, params) {
 
   document.getElementById("submit-btn").addEventListener("click", () => {
     if (q.answer_kind === "essay") {
-      showEssayCriteria(subject, q, params);
+      showEssayCriteria(subject, q, params, posKey);
     } else {
       const given = document.getElementById("answer-input").value;
       const result = localMatch(given, q.correct_answer) ? "correct" : "incorrect";
-      Store.setAttempt(subject, q.id, result, given);
-      showTrainResult(subject, q, result, params);
+      Store.setAttempt(subject, q.id, result, given, posKey);
+      showTrainResult(subject, q, result, params, posKey);
     }
   });
 }
 
-function showEssayCriteria(subject, q, params) {
+function showEssayCriteria(subject, q, params, posKey) {
   const essayText = document.getElementById("essay-input").value;
   const criteria =
     subject === "rus"
@@ -223,16 +286,16 @@ function showEssayCriteria(subject, q, params) {
   `;
   root.innerHTML = layout(subject, html);
   document.getElementById("self-correct").addEventListener("click", () => {
-    Store.setAttempt(subject, q.id, "correct", essayText);
-    showTrainResult(subject, q, "correct", params);
+    Store.setAttempt(subject, q.id, "correct", essayText, posKey);
+    showTrainResult(subject, q, "correct", params, posKey);
   });
   document.getElementById("self-incorrect").addEventListener("click", () => {
-    Store.setAttempt(subject, q.id, "incorrect", essayText);
-    showTrainResult(subject, q, "incorrect", params);
+    Store.setAttempt(subject, q.id, "incorrect", essayText, posKey);
+    showTrainResult(subject, q, "incorrect", params, posKey);
   });
 }
 
-function showTrainResult(subject, q, result, params) {
+function showTrainResult(subject, q, result, params, posKey) {
   const resultHtml =
     result === "correct"
       ? `<div class="result result-correct">Верно ✓</div>`
@@ -264,12 +327,21 @@ function showTrainResult(subject, q, result, params) {
 // ---------- Работа над ошибками ----------
 
 async function renderMistakes(subject) {
-  const questions = await loadSubject(subject);
-  const byId = Object.fromEntries(questions.map((q) => [String(q.id), q]));
   const attempts = Store.allAttempts(subject);
+  const mistakeEntries = Object.entries(attempts).filter(([, a]) => a.result === "incorrect");
 
-  const mistakes = Object.entries(attempts)
-    .filter(([, a]) => a.result === "incorrect")
+  // Загружаем только файлы позиций, в которых реально есть ошибки — не все
+  // 27+ файлов подряд. Записи без сохранённой position (старый формат до
+  // разбиения на файлы) восстановить нельзя, они просто не попадут в список.
+  const posKeys = [...new Set(mistakeEntries.map(([, a]) => (a.position != null ? String(a.position) : null)).filter((p) => p != null))];
+  await Promise.all(posKeys.map((p) => loadPosition(subject, p)));
+  const byId = {};
+  posKeys.forEach((p) => {
+    const pool = POSITION_CACHE[`${subject}/${p}`] || [];
+    pool.forEach((q) => (byId[String(q.id)] = q));
+  });
+
+  const mistakes = mistakeEntries
     .map(([qid, a]) => ({ q: byId[qid], a }))
     .filter((m) => m.q)
     .sort((x, y) => y.a.ts - x.a.ts);
@@ -301,28 +373,31 @@ async function renderMistakes(subject) {
 // ---------- Статистика ----------
 
 async function renderStats(subject) {
-  const questions = await loadSubject(subject);
+  // Как и в "Темах" — считаем по index.json (счётчики) + attempts
+  // (в которых теперь хранится position), полные файлы не грузим.
+  const index = await loadIndex(subject);
   const attempts = Store.allAttempts(subject);
 
   const attempted = Object.keys(attempts).length;
   const correct = Object.values(attempts).filter((a) => a.result === "correct").length;
+  const totalInBase = Object.values(index).reduce((sum, c) => sum + c, 0);
 
-  const byPosition = {};
-  for (const q of questions) {
-    if (q.exam_position == null) continue;
-    byPosition[q.exam_position] = byPosition[q.exam_position] || [];
-    byPosition[q.exam_position].push(q);
+  const solvedByPosition = {};
+  for (const a of Object.values(attempts)) {
+    if (a.result === "correct" && a.position != null) {
+      solvedByPosition[a.position] = (solvedByPosition[a.position] || 0) + 1;
+    }
   }
 
   const bars = structureFor(subject)
     .map((p) => {
-      const qs = byPosition[p.position] || [];
-      const correctCount = qs.filter((q) => attempts[q.id] && attempts[q.id].result === "correct").length;
-      const pct = qs.length ? Math.floor((correctCount / qs.length) * 100) : 0;
+      const total = index[String(p.position)] || 0;
+      const correctCount = solvedByPosition[p.position] || 0;
+      const pct = total ? Math.floor((correctCount / total) * 100) : 0;
       return `<div class="topic-bar-row">
         <div class="topic-bar-label">№${p.position} ${esc(p.title)}</div>
         <div class="topic-bar-track"><div class="topic-bar-fill" style="width:${pct}%"></div></div>
-        <div class="topic-bar-value">${correctCount} / ${qs.length}</div>
+        <div class="topic-bar-value">${correctCount} / ${total}</div>
       </div>`;
     })
     .join("");
@@ -332,7 +407,7 @@ async function renderStats(subject) {
     <div class="stat-summary">
       <div class="stat-box"><div class="stat-value">${attempted}</div><div class="stat-label">заданий пройдено</div></div>
       <div class="stat-box"><div class="stat-value">${correct}</div><div class="stat-label">решено верно</div></div>
-      <div class="stat-box"><div class="stat-value">${questions.length}</div><div class="stat-label">всего в базе</div></div>
+      <div class="stat-box"><div class="stat-value">${totalInBase}</div><div class="stat-label">всего в базе</div></div>
     </div>
     <h2>По заданиям</h2>
     <div class="topic-bars">${bars}</div>
@@ -341,6 +416,22 @@ async function renderStats(subject) {
 }
 
 // ---------- Полный вариант ----------
+
+// exam.positions[qid] запоминает, из какого data/<subject>/pos-N.json файла
+// взят каждый вопрос варианта — иначе при возврате к варианту (перезагрузка
+// страницы, "Завершить", экран результатов) неоткуда узнать, какие файлы
+// вообще грузить, не перебирая все подряд.
+async function loadExamQuestions(subject, exam) {
+  const posKeys = [...new Set(exam.questionIds.map((id) => exam.positions[id]).filter((p) => p != null))];
+  await Promise.all(posKeys.map((p) => loadPosition(subject, p)));
+  return exam.questionIds
+    .map((id) => {
+      const posKey = exam.positions[id];
+      const pool = POSITION_CACHE[`${subject}/${posKey}`] || [];
+      return pool.find((q) => String(q.id) === String(id));
+    })
+    .filter(Boolean);
+}
 
 async function renderExamStart(subject) {
   const existing = Store.getExam(subject);
@@ -363,21 +454,20 @@ async function renderExamStart(subject) {
 
   document.getElementById("start-exam-btn").addEventListener("click", async () => {
     const minutes = Number(document.getElementById("exam-minutes").value) || 90;
-    const questions = await loadSubject(subject);
-    const byPosition = {};
-    for (const q of questions) {
-      if (q.exam_position == null) continue;
-      (byPosition[q.exam_position] = byPosition[q.exam_position] || []).push(q);
-    }
+    const byPosition = await loadAllPositions(subject);
     const questionIds = [];
+    const positions = {};
     for (const p of structureFor(subject)) {
-      const qs = byPosition[p.position];
+      const qs = byPosition[String(p.position)];
       if (qs && qs.length) {
-        questionIds.push(qs[Math.floor(Math.random() * qs.length)].id);
+        const q = qs[Math.floor(Math.random() * qs.length)];
+        questionIds.push(q.id);
+        positions[q.id] = String(p.position);
       }
     }
     Store.setExam(subject, {
       questionIds,
+      positions,
       startedAt: Date.now(),
       durationSec: minutes * 60,
       answers: {},
@@ -395,9 +485,7 @@ async function renderExamLive(subject) {
     location.hash = `#/${subject}/exam`;
     return;
   }
-  const questions = await loadSubject(subject);
-  const byId = Object.fromEntries(questions.map((q) => [q.id, q]));
-  const examQuestions = exam.questionIds.map((id) => byId[id]).filter(Boolean);
+  const examQuestions = await loadExamQuestions(subject, exam);
 
   const missing = structureFor(subject)
     .map((p) => p.position)
@@ -454,7 +542,7 @@ function finishExam(subject, examQuestions) {
       answers[q.id] = { given, result: null };
     } else {
       answers[q.id] = { given, result: localMatch(given, q.correct_answer) ? "correct" : "incorrect" };
-      Store.setAttempt(subject, q.id, answers[q.id].result, given);
+      Store.setAttempt(subject, q.id, answers[q.id].result, given, exam.positions[q.id]);
     }
   }
   exam.answers = answers;
@@ -469,8 +557,8 @@ async function renderExamResults(subject) {
     location.hash = `#/${subject}/exam`;
     return;
   }
-  const questions = await loadSubject(subject);
-  const byId = Object.fromEntries(questions.map((q) => [q.id, q]));
+  const examQuestions = await loadExamQuestions(subject, exam);
+  const byId = Object.fromEntries(examQuestions.map((q) => [q.id, q]));
 
   const scored = exam.questionIds
     .map((id) => byId[id])
@@ -533,7 +621,7 @@ async function renderExamResults(subject) {
       const ex = Store.getExam(subject);
       ex.answers[qid] = ex.answers[qid] || {};
       ex.answers[qid].result = result;
-      Store.setAttempt(subject, qid, result, ex.answers[qid].given || "");
+      Store.setAttempt(subject, qid, result, ex.answers[qid].given || "", ex.positions[qid]);
       Store.setExam(subject, ex);
       renderExamResults(subject);
     });
