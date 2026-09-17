@@ -992,8 +992,24 @@ document.addEventListener("click", (e) => {
   btn.textContent = next === "dark" ? "☀️" : "🌙";
 });
 
+// Высота шапки "плавающая" — на узком экране nav переносится на несколько
+// строк. Таймер экзамена (position: sticky) должен прилипать сразу ПОД
+// шапкой, а не под зашитым числом пикселей, рассчитанным на однострочную
+// десктопную шапку (иначе на телефоне таймер визуально прячется под шапку —
+// обе sticky, у шапки z-index выше). ResizeObserver на body, а не на саму
+// шапку: она целиком пересоздаётся при каждом рендере (root.innerHTML), и
+// прямая ссылка на старый DOM-узел тут же устарела бы.
+function syncTopbarHeight() {
+  const topbar = document.querySelector(".topbar");
+  if (topbar) {
+    document.documentElement.style.setProperty("--topbar-h", `${topbar.getBoundingClientRect().height}px`);
+  }
+}
+new ResizeObserver(syncTopbarHeight).observe(document.body);
+
 window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", () => {
   Sync.init();
   route();
+  syncTopbarHeight();
 });

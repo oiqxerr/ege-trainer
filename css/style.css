@@ -227,10 +227,14 @@ h3 { font-size: 1rem; margin: 20px 0 8px; font-weight: 700; }
   font-size: 0.85rem;
 }
 .q-rubric { color: var(--muted); font-size: 0.85rem; }
-.q-stem { margin-bottom: 14px; }
-.q-stem img { display: block; margin: 10px 0; max-width: 100%; }
-.q-stem table { border-collapse: collapse; }
-.q-stem table td { padding: 2px 6px; }
+.q-stem { margin-bottom: 14px; max-width: 100%; overflow-wrap: break-word; }
+.q-stem img { display: block; margin: 10px 0; max-width: 100%; height: auto; }
+/* РешуЕГЭ иногда оборачивает текст-первоисточник в голую <table> (просто
+   верстательный приём их сайта, не таблица с данными) — без ограничения
+   ширины браузер измеряет "предпочтительную" ширину по самой длинной
+   визуально неразрывной строке и раздувал ВСЮ страницу вдвое на телефоне. */
+.q-stem table { border-collapse: collapse; width: 100% !important; table-layout: fixed; }
+.q-stem table td { padding: 2px 6px; overflow-wrap: break-word; word-break: break-word; }
 .passage {
   background: var(--surface-soft);
   border: 1px solid var(--border);
@@ -278,7 +282,12 @@ input[type="text"], textarea, select {
 
 .timer {
   position: sticky;
-  top: 66px;
+  /* высота шапки на телефоне "плавающая" — nav переносится на несколько
+     строк при узком экране, а тут был зашит один пиксельный отступ под
+     однострочную десктопную шапку, из-за чего таймер прятался ПОД шапкой
+     на мобильном (обе sticky, шапка поверх по z-index). Переменную
+     выставляет app.js по реальной высоте шапки на каждом рендере/ресайзе. */
+  top: calc(var(--topbar-h, 64px) + 4px);
   float: right;
   background: linear-gradient(135deg, var(--pop), var(--pop-dark));
   color: #fff;
@@ -322,4 +331,18 @@ pre { background: #2a2a28; color: #eee; padding: 12px 16px; border-radius: 8px; 
 
 @media (max-width: 480px) {
   .topic-bar-row { grid-template-columns: 1fr; }
+
+  /* На узком экране 4 колонки (номер/задание/прогресс/кнопка) с обычной
+     шириной колонок "по содержимому" в сумме были шире экрана — таблица
+     раздвигала всю страницу вбок. Фиксируем узкие колонки, остальное место
+     отдаём названию задания, и обрезаем внутренние отступы/кнопку. */
+  .topics-table { table-layout: fixed; }
+  .topics-table th, .topics-table td { padding: 8px 6px; font-size: 0.85rem; }
+  .topics-table .topic-code { width: 24px; }
+  .topics-table .topic-progress { width: 56px; font-size: 0.78rem; }
+  .topics-table th:last-child, .topics-table td:last-child { width: 64px; }
+  .topics-table .btn-small { margin: 0; padding: 5px 8px; font-size: 0.72rem; white-space: nowrap; }
+
+  .q-card { padding: 16px 14px; }
+  .q-meta { gap: 8px; }
 }
